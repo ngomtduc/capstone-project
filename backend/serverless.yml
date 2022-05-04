@@ -1,0 +1,164 @@
+app: serverless-todo-app
+service: serverless-todo-app
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-plugin-tracing
+  - serverless-aws-documentation
+  - serverless-reqvalidator-plugin
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  lambdaHashingVersion: '20201221'
+
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+
+  tracing:
+    lambda: true
+    apiGateway: true
+
+  environment:
+    TODOS_TABLE: Todos-${self:provider.stage}
+    TODOS_CREATED_AT_INDEX: CreatedAtIndex
+    ATTACHMENT_S3_BUCKET: ducngo-serverless-c4-todo-images-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
+
+  logs:
+    # Enable API Gateway logs
+    restApi: true
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - xray:PutTelemetryRecords
+            - xray:PutTraceSegments
+          Resource: "*"
+
+custom:
+  documentation:
+    api:
+      info:
+        version: v1.0.0
+        title: DamiSparks Serverless API
+        description: Serverless application for Todo Application
+    models:
+      - name: TodoRequest
+        contentType: application/json
+        schema: ${file(models/create-todo-request.json)}
+      - name: TodoUpdate
+        contentType: application/json
+        schema: ${file(models/update-todo-request.json)}
+
+functions:
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+
+  GetTodos:
+    handler: src/lambda/http/getTodos.handler
+    tracing: true
+    events:
+      - http:
+          method: get
+          path: todos
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: "Allow"        
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:Scan  
+        Resource: !GetAtt TodosTable.Arn
+      - Effect: "Allow"        
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:Scan  
+        Resource: arn:aws:dynamodb:${self:provider.region}:165173476084:table/${self:provider.environment.TODOS_TABLE}/index/${self:provider.environment.TODOS_CREATED_AT_INDEX}
+
+  CreateTodo:
+    handler: src/lambda/http/createTodo.handler
+    tracing: true
+    events:
+      - http:
+          method: post
+          path: todos
+          cors: true
+          authorizer: Auth
+          reqValidatorName: RequestBodyValidator
+          documentation:
+            summary: Create a new todo
+            description: Create a new todo
+            requestModels:
+              'application/json': TodoRequest
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - dynamodb:PutItem
+        Resource: !GetAtt TodosTable.Arn
+
+  UpdateTodo:
+    handler: src/lambda/http/updateTodo.handler
+    tracing: true
+    events:
+      - http:
+          method: patch
+          cors: true
+          path: todos/{todoId}
+          authorizer: Auth
+          reqValidatorName: RequestBodyValidator
+          documentation:
+            summary: Update a todo
+            description: Update a todo
+            requestModels:
+              'application/json': TodoUpdate
+    iamRoleStatements:
+      - Effect: "Allow"        
+        Action:
+          - dynamodb:UpdateItem        
+        Resource: !GetAtt TodosTable.Arn
+
+  DeleteTodo:
+    handler: src/lambda/http/deleteTodo.handler
+    tracing: true
+    events:
+      - http:
+          method: delete
+          cors: true
+          path: todos/{todoId}
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: "Allow"        
+        Action:
+          - dynamodb:DeleteItem        
+        Resource: !GetAtt TodosTable.Arn
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    tracing: true
+    events:
+      - http:
+          method: post
+          cors: true
+          path: todos/{todoId}/attachment
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+          - s3:GetObject
+        Resource: arn:aws:s3:::${self:provider.environment.ATTACHMENT_S3_BUCKET}/*
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: !GetAtt TodosTable.Arn
+
+resources:
+  - ${file(./apiGateway.yml)}
+  - ${file(./dynamodb.yml)}
+  - ${file(./s3.yml)}
